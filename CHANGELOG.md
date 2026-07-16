@@ -4,6 +4,17 @@ All notable changes to the Forail Assistant will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+- **CORS** no longer combines a wildcard origin with credentials (a wildcard now
+  disables `allow_credentials`).
+- **`/api/v1/chat` hardening**: honours an optional shared bearer token
+  (`FORAIL_ASSISTANT_CHAT_TOKEN`) and caps concurrent generations
+  (`FORAIL_ASSISTANT_CHAT_MAX_CONCURRENCY`, 429 on overload) to prevent GPU/CPU
+  exhaustion.
+- Constant-time token comparisons; chat errors no longer leak internal exception
+  text; chat history `role`/`content` is validated (no system-prompt injection or
+  crashes on malformed entries).
+
 ## [2026.06.0] - 2026-06-14
 
 ### Changed

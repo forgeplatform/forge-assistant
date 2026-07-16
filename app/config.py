@@ -30,6 +30,17 @@ class Settings(BaseSettings):
     # endpoint is disabled (fail closed). Startup auto-indexing is unaffected.
     admin_token: str = ""
 
+    # Shared bearer token required to call the chat endpoint (needtofix M14).
+    # When empty the endpoint is open (backwards compatible) but a warning is
+    # logged at startup; set it to require callers to send `Authorization:
+    # Bearer <token>` (the gateway/frontend injects it).
+    chat_token: str = ""
+
+    # Max concurrent chat generations (needtofix M14). Each request drives an
+    # LLM generation up to ollama_timeout seconds; without a cap a flood
+    # exhausts GPU/CPU. Excess requests get 429.
+    chat_max_concurrency: int = 4
+
     model_config = {"env_prefix": "FORAIL_ASSISTANT_"}
 
 

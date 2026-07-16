@@ -71,7 +71,17 @@ async def stream_chat(
 
     if history:
         for entry in history[-6:]:  # Last 3 exchanges
-            messages.append({"role": entry["role"], "content": entry["content"]})
+            # needtofix L11: the role is client-controlled. Only accept
+            # user/assistant turns — a caller must not be able to inject a
+            # 'system' message (prompt injection) or crash us with a malformed
+            # entry missing role/content.
+            if not isinstance(entry, dict):
+                continue
+            role = entry.get("role")
+            content = entry.get("content")
+            if role not in ("user", "assistant") or not isinstance(content, str):
+                continue
+            messages.append({"role": role, "content": content})
 
     messages.append({"role": "user", "content": message})
 

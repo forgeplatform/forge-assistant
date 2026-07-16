@@ -24,6 +24,10 @@ if ! ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
 fi
 
 echo "==> Starting ChromaDB..."
+# needtofix L13: ChromaDB (and Ollama) bind 0.0.0.0 with no auth. This is safe
+# only because they are confined to this pod/container and not exposed by a
+# Service/port. Do NOT publish these ports; if a shared instance is ever
+# needed, put an authenticating proxy in front.
 chroma run --host 0.0.0.0 --port 8000 --path /data/chroma > /dev/null 2>&1 &
 CHROMA_PID=$!
 
