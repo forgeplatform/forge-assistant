@@ -1,5 +1,9 @@
 # Integration overlay for forail-deploy
 # Usage: docker compose -f docker-compose.yml -f docker-compose.integration.yml up -d
+#
+# Only the API joins the Forail network. The ollama service stays on this
+# stack's default network alone — it has no authentication, so nothing outside
+# the assistant should be able to reach it.
 services:
   forail-assistant:
     networks:
