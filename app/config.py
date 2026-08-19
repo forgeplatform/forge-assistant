@@ -41,6 +41,21 @@ class Settings(BaseSettings):
     # exhausts GPU/CPU. Excess requests get 429.
     chat_max_concurrency: int = 4
 
+    # Bounds on a single request (Codex M3). The concurrency cap limits how many
+    # generations run at once, but says nothing about how large or how long any
+    # one of them is -- four callers could hold every slot for the full Ollama
+    # timeout with a prompt the size of a book.
+    #
+    # A question is a question: 4000 characters is longer than anyone types.
+    chat_max_message_chars: int = 4000
+    # Turns of prior conversation kept. Each one is re-sent to the model, so an
+    # unbounded history is an unbounded prompt, paid for on every request.
+    chat_max_history_turns: int = 20
+    chat_max_history_chars: int = 16000
+    # Hard ceiling on one streamed response, independent of the model's own
+    # timeout. A generation that will not stop still ends.
+    chat_deadline_seconds: int = 180
+
     model_config = {"env_prefix": "FORAIL_ASSISTANT_"}
 
 

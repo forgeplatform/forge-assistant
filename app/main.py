@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import json
 import logging
+import time
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -72,6 +73,46 @@ class ChatRequest(BaseModel):
     history: list[dict] | None = None
 
 
+def _bounded_request(req: "ChatRequest") -> tuple[str, list[dict]]:
+    """
+    The message and history this request is allowed to spend, or 413.
+
+    The concurrency cap limits how many generations run at once and says nothing
+    about how large any one of them is: four callers could hold every slot for
+    the full Ollama timeout with a prompt the size of a book. History matters
+    more than the message, because every turn is re-sent to the model and paid
+    for again on the next request.
+    """
+    message = (req.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message must not be empty")
+    if len(message) > settings.chat_max_message_chars:
+        raise HTTPException(
+            status_code=413,
+            detail=f"message must be at most {settings.chat_max_message_chars} characters",
+        )
+
+    history = req.history or []
+    if not isinstance(history, list):
+        raise HTTPException(status_code=400, detail="history must be a list")
+
+    # Trimmed rather than rejected: dropping the oldest turns degrades the answer
+    # a little, while a 413 in the middle of a conversation ends it.
+    history = history[-settings.chat_max_history_turns:]
+    budget = settings.chat_max_history_chars
+    kept: list[dict] = []
+    for turn in reversed(history):
+        if not isinstance(turn, dict):
+            continue
+        cost = len(str(turn.get("content", "")))
+        if cost > budget:
+            break
+        budget -= cost
+        kept.append(turn)
+    kept.reverse()
+    return message, kept
+
+
 class HealthResponse(BaseModel):
     status: str
     version: str
@@ -129,18 +170,30 @@ async def chat(req: ChatRequest, authorization: str | None = Header(default=None
     if _chat_semaphore.locked():
         raise HTTPException(status_code=429, detail="Assistant busy, retry shortly")
 
+    message, history = _bounded_request(req)
+
     page_context = ""
     if req.context and req.context.get("page"):
-        page_context = req.context["page"]
+        page_context = str(req.context["page"])[:200]
 
     async def event_generator():
         async with _chat_semaphore:
+            deadline = time.monotonic() + settings.chat_deadline_seconds
             try:
                 async for token in stream_chat(
-                    message=req.message,
+                    message=message,
                     page_context=page_context,
-                    history=req.history,
+                    history=history,
                 ):
+                    # A generation that will not stop still has to end: the
+                    # slot it holds is one of only chat_max_concurrency.
+                    if time.monotonic() > deadline:
+                        logger.warning(
+                            "Chat generation exceeded %ss deadline; cutting the stream",
+                            settings.chat_deadline_seconds,
+                        )
+                        yield {"data": json.dumps({"error": "response timed out", "done": True})}
+                        return
                     yield {"data": json.dumps({"token": token})}
                 yield {"data": json.dumps({"done": True})}
             except Exception:
