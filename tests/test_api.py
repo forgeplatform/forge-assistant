@@ -156,3 +156,113 @@ class TestOpenAPI:
         schema = resp.json()
         assert "/api/v1/health" in schema["paths"]
         assert "/api/v1/chat" in schema["paths"]
+
+
+class TestChatRequestBounds:
+    """
+    Codex M3: the concurrency cap limits how many generations run at once and
+    says nothing about how large or how long any one of them is. Four callers
+    could hold every slot for the full Ollama timeout with a prompt the size of
+    a book.
+    """
+
+    def _stream(self):
+        async def mock_stream(*args, **kwargs):
+            yield "ok"
+        return mock_stream
+
+    def test_oversized_message_is_refused(self, client):
+        from app.config import settings
+
+        resp = client.post(
+            "/api/v1/chat",
+            json={"message": "x" * (settings.chat_max_message_chars + 1)},
+        )
+        assert resp.status_code == 413
+
+    def test_message_at_the_limit_is_accepted(self, client):
+        from app.config import settings
+
+        with patch("app.main.stream_chat", side_effect=self._stream()):
+            resp = client.post(
+                "/api/v1/chat",
+                json={"message": "x" * settings.chat_max_message_chars},
+            )
+        assert resp.status_code == 200
+
+    def test_blank_message_is_refused(self, client):
+        resp = client.post("/api/v1/chat", json={"message": "   "})
+        assert resp.status_code == 400
+
+    def test_history_is_trimmed_to_the_most_recent_turns(self, client):
+        # Trimmed rather than rejected: dropping the oldest turns costs a little
+        # context, while a 413 mid-conversation ends it.
+        from app.config import settings
+
+        captured = {}
+
+        async def mock_stream(*args, **kwargs):
+            captured.update(kwargs)
+            yield "ok"
+
+        history = [{"role": "user", "content": f"turn {i}"} for i in range(200)]
+        with patch("app.main.stream_chat", side_effect=mock_stream):
+            resp = client.post("/api/v1/chat", json={"message": "hi", "history": history})
+
+        assert resp.status_code == 200
+        assert len(captured["history"]) <= settings.chat_max_history_turns
+        # The turns kept are the recent ones, not the first ones.
+        assert captured["history"][-1]["content"] == "turn 199"
+
+    def test_history_is_trimmed_by_total_size(self, client):
+        from app.config import settings
+
+        captured = {}
+
+        async def mock_stream(*args, **kwargs):
+            captured.update(kwargs)
+            yield "ok"
+
+        history = [{"role": "user", "content": "x" * 5000} for _ in range(10)]
+        with patch("app.main.stream_chat", side_effect=mock_stream):
+            client.post("/api/v1/chat", json={"message": "hi", "history": history})
+
+        total = sum(len(t["content"]) for t in captured["history"])
+        assert total <= settings.chat_max_history_chars
+
+    def test_page_context_is_truncated(self, client):
+        captured = {}
+
+        async def mock_stream(*args, **kwargs):
+            captured.update(kwargs)
+            yield "ok"
+
+        with patch("app.main.stream_chat", side_effect=mock_stream):
+            client.post(
+                "/api/v1/chat",
+                json={"message": "hi", "context": {"page": "/x" * 5000}},
+            )
+        assert len(captured["page_context"]) <= 200
+
+    def test_a_generation_that_will_not_stop_is_cut(self, client):
+        # The slot it holds is one of only chat_max_concurrency, so an endless
+        # stream is a denial of service against the other three. A deadline
+        # already in the past is the same code path as one that runs out.
+        from app.config import settings
+
+        emitted = 0
+
+        async def endless(*args, **kwargs):
+            nonlocal emitted
+            for _ in range(100):
+                emitted += 1
+                yield "token"
+
+        with patch("app.main.stream_chat", side_effect=endless), \
+             patch.object(settings, "chat_deadline_seconds", -1):
+            resp = client.post("/api/v1/chat", json={"message": "hi"})
+
+        assert resp.status_code == 200
+        assert "timed out" in resp.text
+        # Cut, not drained: the generator does not run to completion.
+        assert emitted < 100

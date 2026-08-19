@@ -23,6 +23,17 @@ All configuration is via environment variables with the `FORAIL_ASSISTANT_` pref
 | `FORAIL_ASSISTANT_CHROMA_PORT` | `8000` | ChromaDB port |
 | `FORAIL_ASSISTANT_CHROMA_COLLECTION` | `forail_docs` | Collection name for indexed documents |
 
+### Request Limits
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FORAIL_ASSISTANT_CHAT_TOKEN` | `""` | Bearer token required on `/api/v1/chat`. **Empty means the endpoint is open** — set it whenever the service is reachable by anything you do not control |
+| `FORAIL_ASSISTANT_CHAT_MAX_CONCURRENCY` | `4` | Concurrent generations; excess requests get 429 |
+| `FORAIL_ASSISTANT_CHAT_MAX_MESSAGE_CHARS` | `4000` | Longest accepted question; over it returns 413 |
+| `FORAIL_ASSISTANT_CHAT_MAX_HISTORY_TURNS` | `20` | Prior turns kept. Trimmed, not rejected — every turn is re-sent to the model on each request |
+| `FORAIL_ASSISTANT_CHAT_MAX_HISTORY_CHARS` | `16000` | Total history size kept, oldest turns dropped first |
+| `FORAIL_ASSISTANT_CHAT_DEADLINE_SECONDS` | `180` | Hard ceiling on one streamed response. A generation that will not stop still ends, so it cannot hold a concurrency slot indefinitely |
+
 ### RAG Settings
 
 | Variable | Default | Description |
