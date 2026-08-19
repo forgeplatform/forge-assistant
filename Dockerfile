@@ -1,7 +1,16 @@
-### Forail Assistant — All-in-one image
-### Ollama (LLM) + ChromaDB (embedded) + FastAPI in a single container
-
-FROM ollama/ollama:latest AS ollama
+### Forail Assistant — API image
+### FastAPI (RAG pipeline) + ChromaDB (embedded).
+###
+### Ollama is NOT bundled here. It runs as its own service so that only the
+### model server needs a GPU (and, in Kubernetes, only that pod needs to land
+### on a GPU node). See docker-compose.yml, or the forail-assistant-ollama
+### Deployment in the Helm chart.
+###
+### The previous all-in-one layout copied /bin/ollama out of the official
+### image on its own. That silently stopped working: modern Ollama keeps the
+### inference engine in /usr/lib/ollama (llama-server, libggml, the CUDA
+### backends), so the copied binary could start a server but never load a
+### model — every request came back 500.
 
 FROM python:3.12-slim
 
@@ -12,9 +21,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-# Copy Ollama binary from official image
-COPY --from=ollama /bin/ollama /usr/local/bin/ollama
 
 # Install Python dependencies
 COPY requirements.txt .
@@ -28,11 +34,14 @@ COPY docs_to_index/ ./docs_to_index/
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Directories for data persistence
-RUN mkdir -p /data/ollama /data/chroma
+# Directory for the ChromaDB index. Model blobs live in the Ollama service's
+# own volume, not here.
+RUN mkdir -p /data/chroma
 
-ENV OLLAMA_MODELS=/data/ollama
-ENV FORAIL_ASSISTANT_OLLAMA_BASE_URL=http://localhost:11434
+# Default points at the Ollama service by its compose/Service name. Both the
+# compose file and the Helm chart set this explicitly; the default only keeps
+# a bare `docker run` on the same network working.
+ENV FORAIL_ASSISTANT_OLLAMA_BASE_URL=http://ollama:11434
 ENV FORAIL_ASSISTANT_OLLAMA_MODEL=gemma3:1b
 ENV FORAIL_ASSISTANT_CHROMA_HOST=localhost
 ENV FORAIL_ASSISTANT_CHROMA_PORT=8000

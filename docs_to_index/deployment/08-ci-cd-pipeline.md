@@ -60,7 +60,8 @@ No third-party credentials are required — everything runs in the GitHub-hosted
 | `ghcr.io/forail-platform/forail-backend:<version>` | Same | Version-tagged (CalVer) |
 | `ghcr.io/forail-platform/forail-frontend:latest` | `forail-frontend/Dockerfile` | React SPA + nginx |
 | `ghcr.io/forail-platform/forail-frontend:<version>` | Same | Version-tagged |
-| `ghcr.io/forail-platform/forail-assistant:latest` | `forail-assistant/Dockerfile` | FastAPI + Ollama + ChromaDB (preview) |
+| `ghcr.io/forail-platform/forail-assistant:latest` | `forail-assistant/Dockerfile` | FastAPI + ChromaDB (preview) — the model server is not in this image |
+| `ollama/ollama:<pinned>` | upstream | Model server for the assistant. Not built here; pinned in `images.assistantOllama` |
 | `ghcr.io/forail-platform/forail-operator:<version>` | `forail-operator/Dockerfile` | Kubernetes operator |
 
 All images are **public** — no pull secret required for `docker pull` or `helm install`.

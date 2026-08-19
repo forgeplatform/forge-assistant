@@ -10,20 +10,24 @@ AI-powered assistant for the Forail infrastructure automation platform. Uses a l
 
 ## Overview
 
-Forail Assistant is an **optional, standalone service** that can be plugged into or removed from any Forail deployment. It runs as a **single all-in-one container** with Ollama (LLM) and ChromaDB (embedded) bundled inside.
+Forail Assistant is an **optional, standalone service** that can be plugged into or removed from any Forail deployment. It runs as **two containers**: the API (FastAPI + embedded ChromaDB) and Ollama, the model server.
 
 ```
-┌──────────────────┐     ┌──────────────────────────────────────┐
-│  Forail Frontend  │────▶│         Forail Assistant               │
-│  (React chat)    │ SSE │  ┌──────────┐  ┌──────────────────┐  │
-└──────────────────┘     │  │  Ollama   │  │    FastAPI        │  │
-                         │  │ gemma3:1b │  │  (RAG pipeline)   │  │
-                         │  └──────────┘  └────────┬──────────┘  │
-                         │                ┌────────▼──────────┐  │
-                         │                │  ChromaDB (embed)  │  │
-                         │                └───────────────────┘  │
-                         └──────────────────────────────────────┘
+┌──────────────────┐     ┌───────────────────────────────┐     ┌──────────────┐
+│  Forail Frontend  │────▶│      Forail Assistant API      │────▶│    Ollama     │
+│  (React chat)    │ SSE │  ┌──────────────────────────┐ │HTTP │  gemma3:1b    │
+└──────────────────┘     │  │  FastAPI (RAG pipeline)   │ │     │  (GPU here)   │
+                         │  └────────────┬─────────────┘ │     └──────────────┘
+                         │  ┌────────────▼─────────────┐ │
+                         │  │    ChromaDB (embedded)    │ │
+                         │  └──────────────────────────┘ │
+                         └───────────────────────────────┘
 ```
+
+They are separate on purpose: only the model server benefits from a GPU, so
+only it carries the GPU requirement. In Kubernetes that means just one pod has
+to land on a GPU node while the API stays schedulable anywhere. Ollama has no
+authentication, so it is never given a published port — only the API talks to it.
 
 ## Features
 
@@ -36,8 +40,11 @@ Forail Assistant is an **optional, standalone service** that can be plugged into
 ## Quick Start
 
 ```bash
-# Start the assistant (all-in-one: Ollama + ChromaDB + FastAPI)
+# Start the assistant (API + Ollama)
 docker compose up -d
+
+# ...or with GPU acceleration for the model server (see Hardware below)
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 
 # Wait ~2 minutes for Ollama to load the model on first start,
 # then index documentation
@@ -49,7 +56,7 @@ curl -X POST http://localhost:8100/api/v1/chat \
   -d '{"message": "How do I create a job template?"}'
 ```
 
-> **Note:** On first start, the entrypoint automatically pulls the LLM model (`gemma3:1b`) and embedding model (`nomic-embed-text`). The healthcheck `start_period` is 120 seconds to allow time for this.
+> **Note:** On first start, the API waits for Ollama and then pulls the LLM model (`gemma3:1b`) and embedding model (`nomic-embed-text`) over Ollama's API. The healthcheck `start_period` is 120 seconds to allow time for this.
 
 ## Integration with Forail
 
@@ -68,21 +75,41 @@ All settings via environment variables with `FORAIL_ASSISTANT_` prefix:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FORAIL_ASSISTANT_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API URL (localhost — runs inside the same container) |
+| `FORAIL_ASSISTANT_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API URL. The code defaults to localhost for local development; the image and the Helm chart both override it to point at the Ollama service |
 | `FORAIL_ASSISTANT_OLLAMA_MODEL` | `gemma3:1b` | LLM model |
 | `FORAIL_ASSISTANT_OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
-| `FORAIL_ASSISTANT_CHROMA_HOST` | `localhost` | ChromaDB host (localhost — embedded in the same container) |
+| `FORAIL_ASSISTANT_CHROMA_HOST` | `localhost` | ChromaDB host (localhost — embedded in the API container) |
 | `FORAIL_ASSISTANT_CHROMA_PORT` | `8000` | ChromaDB port |
-| `FORAIL_ASSISTANT_RAG_TOP_K` | `5` | Number of docs to retrieve |
+| `FORAIL_ASSISTANT_RAG_TOP_K` | `3` | Number of docs to retrieve |
 | `FORAIL_ASSISTANT_LOG_LEVEL` | `INFO` | Logging level |
 
 ## Hardware Requirements
 
-| Setup | RAM | GPU | Response Time |
-|-------|-----|-----|---------------|
-| CPU-only (phi3:mini) | 8 GB | None | 10-20s |
-| GPU (mistral:7b) | 16 GB | 8 GB VRAM | 2-5s |
-| GPU (llama3.1:8b) | 32 GB | 12 GB VRAM | 1-3s |
+The GPU overlay needs the NVIDIA driver plus `nvidia-container-toolkit`
+registered with Docker (`nvidia-ctk runtime configure --runtime=docker`).
+Without it the reservation fails and the stack refuses to start — deliberately,
+so that a missing GPU is loud rather than a silent fall back to CPU.
+
+Ollama picks CPU silently when it cannot see a device. Always confirm:
+
+```bash
+docker compose logs ollama | grep "inference compute"
+# GPU:  library=CUDA ... description="NVIDIA GeForce RTX 3080" total="11.6 GiB"
+# CPU:  library=cpu ... name=cpu
+```
+
+Measured on a Ryzen 9 5900X / RTX 3080 12GB, `gemma3:1b`, warm (model already
+resident), same two questions against the same index:
+
+| Setup | Time to first token | Generation throughput |
+|-------|--------------------|----------------------|
+| CPU (24 threads) | ~0.5s | ~680 B/s |
+| GPU (RTX 3080) | ~0.5s | ~3900 B/s |
+
+Time to first token is dominated by RAG retrieval, so it barely moves; the GPU
+buys roughly **5–6× generation throughput**. That matters most as a headroom
+budget: it is what makes a larger, more accurate model affordable at all, since
+an 8B-class model on CPU is slower again by a wide margin.
 
 ## Development
 
