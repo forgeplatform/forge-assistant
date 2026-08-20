@@ -4,6 +4,34 @@ All notable changes to the Forail Assistant will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **The assistant could not run a model at all.** The image copied `/bin/ollama`
+  out of `ollama/ollama:latest` and nothing else, but Ollama keeps its inference
+  engine in `/usr/lib/ollama` (`llama-server`, `libggml`, the CUDA backends).
+  The server started and answered `/api/tags`, so health checks looked fine,
+  while every generation failed with
+  `error starting llama-server: llama-server binary not found` — HTTP 500. This
+  affects the published `2026.06.0` image, which ships Ollama 0.30.8 without
+  that directory.
+
+### Changed
+- **Ollama now runs as its own service** instead of being bundled into the API
+  image, and its version is **pinned** (`ollama/ollama:0.30.10`) rather than
+  tracking `latest`. Tracking `latest` is what let an upstream layout change
+  break inference without a line of our code changing. Splitting it also means
+  only the model server needs a GPU: in Kubernetes just that pod requests
+  `nvidia.com/gpu` and lands on a GPU node, while the API stays schedulable
+  anywhere.
+- The API waits for Ollama on startup and pulls models over its HTTP API (the
+  `ollama` CLI is no longer present in the image). The wait is bounded at 300s
+  and exits with a clear message instead of hanging.
+
+### Added
+- `docker-compose.gpu.yml` overlay that attaches an NVIDIA GPU to the model
+  server. Kept separate so a host without a GPU fails loudly instead of quietly
+  running on CPU. Measured on an RTX 3080 with `gemma3:1b`: ~5–6× generation
+  throughput over 24-thread CPU inference.
+
 ### Security
 - **CORS** no longer combines a wildcard origin with credentials (a wildcard now
   disables `allow_credentials`).

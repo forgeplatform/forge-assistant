@@ -10,7 +10,7 @@ All configuration is via environment variables with the `FORAIL_ASSISTANT_` pref
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FORAIL_ASSISTANT_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL (localhost — runs inside the same container) |
+| `FORAIL_ASSISTANT_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL. Ollama is a **separate service**, so this default only fits a hand-rolled setup with one on the host; the shipped image, the Compose file and the Helm chart all override it (`http://ollama:11434`, `http://forail-assistant-ollama:11434`) |
 | `FORAIL_ASSISTANT_OLLAMA_MODEL` | `gemma3:1b` | LLM model for chat generation |
 | `FORAIL_ASSISTANT_OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Model for generating embeddings |
 | `FORAIL_ASSISTANT_OLLAMA_TIMEOUT` | `120` | Timeout in seconds for Ollama requests |
@@ -22,6 +22,17 @@ All configuration is via environment variables with the `FORAIL_ASSISTANT_` pref
 | `FORAIL_ASSISTANT_CHROMA_HOST` | `localhost` | ChromaDB hostname (localhost — embedded in the same container) |
 | `FORAIL_ASSISTANT_CHROMA_PORT` | `8000` | ChromaDB port |
 | `FORAIL_ASSISTANT_CHROMA_COLLECTION` | `forail_docs` | Collection name for indexed documents |
+
+### Request Limits
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FORAIL_ASSISTANT_CHAT_TOKEN` | `""` | Bearer token required on `/api/v1/chat`. **Empty means the endpoint is open** — set it whenever the service is reachable by anything you do not control |
+| `FORAIL_ASSISTANT_CHAT_MAX_CONCURRENCY` | `4` | Concurrent generations; excess requests get 429 |
+| `FORAIL_ASSISTANT_CHAT_MAX_MESSAGE_CHARS` | `4000` | Longest accepted question; over it returns 413 |
+| `FORAIL_ASSISTANT_CHAT_MAX_HISTORY_TURNS` | `20` | Prior turns kept. Trimmed, not rejected — every turn is re-sent to the model on each request |
+| `FORAIL_ASSISTANT_CHAT_MAX_HISTORY_CHARS` | `16000` | Total history size kept, oldest turns dropped first |
+| `FORAIL_ASSISTANT_CHAT_DEADLINE_SECONDS` | `180` | Hard ceiling on one streamed response. A generation that will not stop still ends, so it cannot hold a concurrency slot indefinitely |
 
 ### RAG Settings
 
@@ -54,12 +65,21 @@ All configuration is via environment variables with the `FORAIL_ASSISTANT_` pref
 
 To change the model:
 ```bash
-# Pull new model (exec into the all-in-one container)
-docker compose exec forail-assistant ollama pull llama3.1:8b
-
-# Restart with new model
+# Restart with the new model — the API pulls it over Ollama's HTTP API on
+# start, so nothing has to be pulled by hand.
 FORAIL_ASSISTANT_OLLAMA_MODEL=llama3.1:8b docker compose up -d
 ```
+
+To pull one ahead of time, address the model server directly. The `ollama` CLI
+is no longer in the API image — it is in the Ollama service:
+
+```bash
+docker compose exec ollama ollama pull llama3.1:8b
+```
+
+Anything above `gemma3:1b` wants the GPU overlay
+(`-f docker-compose.gpu.yml`); the VRAM column above is the model server's
+requirement alone, since it is the only service doing inference.
 
 ---
 

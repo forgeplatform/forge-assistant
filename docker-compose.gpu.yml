@@ -1,0 +1,30 @@
+# GPU overlay — hands an NVIDIA GPU to the Ollama service.
+#
+# Kept as an overlay rather than folded into docker-compose.yml because a
+# `devices` reservation is a hard requirement: on a host without a GPU the
+# stack refuses to start instead of quietly running on CPU.
+#
+# Requires on the host:
+#   - NVIDIA driver
+#   - nvidia-container-toolkit, registered with Docker:
+#       sudo nvidia-ctk runtime configure --runtime=docker
+#       sudo systemctl restart docker
+#
+# Verify the host is ready before using this file:
+#   docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# Confirm Ollama actually picked the GPU up (it falls back to CPU silently):
+#   docker compose logs ollama | grep "inference compute"
+# The line must report a CUDA library and non-zero VRAM, not `library=cpu`.
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

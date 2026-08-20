@@ -1,22 +1,35 @@
 services:
+  # Model server. Pinned deliberately: this used to be `ollama/ollama:latest`
+  # scavenged for its binary, and an upstream layout change broke inference
+  # without changing a line of our code. Bump this tag on purpose, not by drift.
+  ollama:
+    image: ollama/ollama:0.30.10
+    volumes:
+      - ollama_models:/root/.ollama
+    # No published port on purpose — Ollama has no authentication. It is
+    # reachable only by services on this compose network.
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list > /dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    restart: unless-stopped
+
   forail-assistant:
     build: .
     image: ghcr.io/forail-platform/forail-assistant:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
     ports:
       - "8100:8100"
     volumes:
       - assistant_data:/data
     environment:
+      - FORAIL_ASSISTANT_OLLAMA_BASE_URL=http://ollama:11434
       - FORAIL_ASSISTANT_OLLAMA_MODEL=gemma3:1b
       - FORAIL_ASSISTANT_LOG_LEVEL=INFO
-    # Uncomment for GPU support:
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8100/api/v1/health"]
       interval: 30s
@@ -27,3 +40,4 @@ services:
 
 volumes:
   assistant_data:
+  ollama_models:

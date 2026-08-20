@@ -1,19 +1,23 @@
 # Disaster Recovery — ChromaDB Index & Models
 
-The assistant keeps **all** persistent state in one place:
+The assistant runs as two services, and each keeps its own persistent state:
 
-| Deployment | Location | Holds |
-|------------|----------|-------|
-| Docker Compose | volume `assistant_data` mounted at `/data` | ChromaDB vector store + pulled Ollama models |
-| Kubernetes (forail-helm) | PVC `forail-assistant-data` (default **20Gi**) at `/data` | same |
+| Deployment | API — vector index | Model server — model blobs |
+|------------|--------------------|----------------------------|
+| Docker Compose | volume `assistant_data` at `/data` | volume `ollama_models` at `/root/.ollama` |
+| Kubernetes (forail-helm) | PVC `forail-assistant-data` (default **5Gi**) at `/data` | PVC `forail-assistant-ollama-models` (default **20Gi**) at `/root/.ollama` |
 
-Inside `/data`:
+What each holds:
 
-- **ChromaDB** — the embedded vector store; collection `forail_docs`
+- **ChromaDB** (API) — the embedded vector store; collection `forail_docs`
   (configurable via `FORAIL_ASSISTANT_CHROMA_COLLECTION`). This is the
   RAG index built from your documentation.
-- **Ollama models** — the pulled LLM (`gemma3:1b` by default) and the
-  embedding model (`nomic-embed-text`).
+- **Ollama models** (model server) — the pulled LLM (`gemma3:1b` by default)
+  and the embedding model (`nomic-embed-text`).
+
+Keeping them apart is the point: model blobs are far larger than the index and
+outlive a rebuild of the API, so the index claim is sized by the corpus rather
+than by the model.
 
 ## Key principle: the index is *rebuildable*, not precious
 
@@ -30,10 +34,11 @@ kubectl -n forail exec deploy/forail-assistant -- \
   curl -sX POST "http://localhost:8100/api/v1/index?rebuild=true"
 ```
 
-Likewise, **Ollama models re-download automatically** on first start if
-they are missing. So the realistic worst case — total loss of `/data` —
-recovers by: start the container (models re-pull) → re-index (index
-rebuilds). No restore from backup is strictly required.
+Likewise, **Ollama models re-download automatically** if they are missing —
+the API pulls them over Ollama's HTTP API when it starts. So the realistic
+worst case — losing both volumes — recovers by: start the stack (models
+re-pull) → re-index (index rebuilds). No restore from backup is strictly
+required.
 
 > This is why the assistant is safe to run with `assistant.enabled=false`
 > by default and to add/remove freely: it carries no irreplaceable state.
@@ -45,32 +50,40 @@ rebuilds). No restore from backup is strictly required.
 | **Index empty / never built** | Chat answers with no doc context | `POST /api/v1/index` |
 | **Index stale** (docs changed) | Answers cite old content | `POST /api/v1/index?rebuild=true` |
 | **Index corrupted** | Chat errors, ChromaDB read failures in logs | Delete the Chroma dir under `/data`, restart, then `?rebuild=true` |
-| **Models missing** | Health check fails on startup, "model not found" | Just restart — entrypoint re-pulls `gemma3:1b` + `nomic-embed-text` |
-| **Total `/data` loss** | Fresh/empty volume | Restart (models re-pull) → `POST /api/v1/index?rebuild=true` |
-| **PVC lost (k8s)** | Pod stuck / volume gone | Recreate PVC (helm re-apply), pod re-pulls models, re-index |
+| **Models missing** | Health check fails on startup, "model not found" | Just restart the API — it re-pulls `gemma3:1b` + `nomic-embed-text` over Ollama's API |
+| **Model server down / unreachable** | API exits after 300s with `Ollama not reachable at ...` | Check the `ollama` service (Compose) or the `forail-assistant-ollama` Deployment and its Service, then restart the API |
+| **Total volume loss** | Fresh/empty volumes | Restart (models re-pull) → `POST /api/v1/index?rebuild=true` |
+| **PVC lost (k8s)** | Pod stuck / volume gone | Recreate the PVC (helm re-apply); `forail-assistant-ollama-models` re-pulls, `forail-assistant-data` re-indexes |
 
-## Optional: back up `/data` to skip re-download/re-index
+## Optional: back up the volumes to skip re-download/re-index
 
 Re-indexing and model re-download are usually faster than a restore, but
 for air-gapped hosts (no registry to re-pull models from) or very large
-corpora, back up the volume:
+corpora, back the volumes up. On an air-gapped host the **model** volume is
+the one that matters — the index can always be rebuilt from `docs_to_index/`,
+while models cannot be pulled at all:
 
 ```bash
-# Compose — backup
+# Compose — backup (index, then models)
 docker run --rm -v forail-assistant_assistant_data:/data -v "$(pwd)/backups":/backup \
   alpine tar czf /backup/assistant-data.tar.gz /data
+docker run --rm -v forail-assistant_ollama_models:/models -v "$(pwd)/backups":/backup \
+  alpine tar czf /backup/ollama-models.tar.gz /models
 
 # Compose — restore
 docker run --rm -v forail-assistant_assistant_data:/data -v "$(pwd)/backups":/backup \
   alpine tar xzf /backup/assistant-data.tar.gz -C /
+docker run --rm -v forail-assistant_ollama_models:/models -v "$(pwd)/backups":/backup \
+  alpine tar xzf /backup/ollama-models.tar.gz -C /
 ```
 
 ```bash
-# Kubernetes — snapshot the PVC with your CSI VolumeSnapshot class, or copy it out:
+# Kubernetes — snapshot both PVCs with your CSI VolumeSnapshot class, or copy them out:
 kubectl -n forail exec deploy/forail-assistant -- tar czf - /data > assistant-data.tar.gz
+kubectl -n forail exec deploy/forail-assistant-ollama -- tar czf - /root/.ollama > ollama-models.tar.gz
 ```
 
-For air-gapped clusters, back up `/data` **after** the first successful
+For air-gapped clusters, back both up **after** the first successful
 model pull + index so the restore is fully self-contained.
 
 ## Recovery objectives

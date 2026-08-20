@@ -1,9 +1,19 @@
 """Tests for configuration module."""
 
+import os
+
 from app.config import Settings
 
 
-def test_default_settings():
+def test_default_settings(monkeypatch):
+    # The shipped image sets FORAIL_ASSISTANT_* variables (it points the API at
+    # the ollama service, not localhost), so without clearing them this asserts
+    # the environment rather than the code's defaults — and fails when run
+    # inside that image.
+    for name in list(os.environ):
+        if name.startswith("FORAIL_ASSISTANT_"):
+            monkeypatch.delenv(name)
+
     s = Settings()
     assert s.ollama_base_url == "http://localhost:11434"
     assert s.ollama_model == "gemma3:1b"

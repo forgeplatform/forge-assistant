@@ -9,17 +9,28 @@ cd forail-assistant
 docker compose up -d
 ```
 
-This starts a **single all-in-one container** (`forail-assistant`) that bundles:
-- **Ollama** — LLM server (internal, port 11434)
-- **ChromaDB** — vector store (embedded, port 8000)
-- **FastAPI** — API server (exposed on port 8100)
+This starts **two containers**:
+
+| Service | Contains | Ports |
+|---------|----------|-------|
+| `forail-assistant` | FastAPI API server + embedded ChromaDB (port 8000, in-container) | 8100 published |
+| `ollama` | The model server, from the pinned `ollama/ollama` image | none published |
+
+Ollama is deliberately given no published port: it has no authentication, so it
+is reachable only by the API over the Compose network. Each service keeps its
+own volume — `assistant_data` for the vector index, `ollama_models` for model
+blobs — so rebuilding one does not discard the other's data.
 
 ### First-Time Setup
 
-On first start, the entrypoint automatically pulls the LLM model (`gemma3:1b`) and embedding model (`nomic-embed-text`). Allow ~2 minutes for the initial model download.
+On first start the API waits for the model server to come up, then pulls the LLM
+model (`gemma3:1b`) and the embedding model (`nomic-embed-text`) over Ollama's
+HTTP API. Allow ~2 minutes for the initial download. The wait is bounded at
+300s; past that the API exits with the URL it was trying to reach rather than
+hanging.
 
 ```bash
-# 1. Start the container
+# 1. Start both services
 docker compose up -d
 
 # 2. Wait for health check to pass (start_period is 120s)
@@ -74,24 +85,27 @@ The Forail frontend automatically detects the assistant by calling `/assistant/a
 
 ## GPU Support
 
-For GPU-accelerated inference, uncomment the GPU section in `docker-compose.yml`:
+Inference happens in the `ollama` service alone, so that is the only service the
+GPU is handed to. It ships as an overlay rather than a commented-out block:
 
-```yaml
-services:
-  forail-assistant:
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 ```
 
+The reservation is a hard requirement, on purpose — on a host without a usable
+GPU the stack refuses to start instead of quietly falling back to CPU.
+
 Requirements:
-- NVIDIA GPU with 8+ GB VRAM
-- nvidia-container-toolkit installed on the host
-- Docker configured with nvidia runtime
+- NVIDIA GPU (8+ GB VRAM for an 8B-class model; `gemma3:1b` needs ~2 GB)
+- `nvidia-container-toolkit` installed and registered with Docker:
+  `sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`
+
+Ollama falls back to CPU silently when it cannot see a device, so confirm:
+
+```bash
+docker compose logs ollama | grep "inference compute"
+# must report library=CUDA and non-zero VRAM, not library=cpu
+```
 
 ---
 
@@ -112,10 +126,11 @@ Response time will be 10-20 seconds instead of 2-5 seconds.
 To remove the assistant from a running Forail deployment:
 
 ```bash
-# Stop assistant service
+# Stop the assistant services (both of them — stopping only the API leaves
+# the model server running and holding its volume)
 docker compose -f docker-compose.yml \
   -f /path/to/forail-assistant/docker-compose.integration.yml \
-  down forail-assistant
+  down forail-assistant ollama
 
 # Or if running standalone
 cd forail-assistant && docker compose down -v
@@ -127,10 +142,15 @@ The Forail platform continues to work normally. The chat button disappears autom
 
 ## Backup and Restore
 
-All persistent data (ChromaDB + Ollama models) is stored in the `assistant_data` volume mounted at `/data`:
+Persistent data lives in two volumes, one per service:
+
+| Volume | Mounted at | Holds |
+|--------|-----------|-------|
+| `assistant_data` | `/data` in the API container | the ChromaDB vector index |
+| `ollama_models` | `/root/.ollama` in the model server | pulled model blobs |
 
 ```bash
-# Backup
+# Backup the vector index
 docker run --rm -v forail-assistant_assistant_data:/data -v $(pwd)/backups:/backup \
   alpine tar czf /backup/assistant-data.tar.gz /data
 
@@ -139,7 +159,11 @@ docker run --rm -v forail-assistant_assistant_data:/data -v $(pwd)/backups:/back
   alpine tar xzf /backup/assistant-data.tar.gz -C /
 ```
 
-> **Tip:** Re-indexing docs (`curl -X POST http://localhost:8100/api/v1/index?rebuild=true`) is fast and often easier than restoring ChromaDB data. Model re-download is automatic on first start if models are missing.
+> **Tip:** Neither volume actually has to be backed up. Re-indexing
+> (`curl -X POST http://localhost:8100/api/v1/index?rebuild=true`) rebuilds the
+> index from `docs_to_index/`, and models re-download on first start when
+> `ollama_models` is empty. Back `ollama_models` up only to avoid re-pulling
+> several GB on a metered or air-gapped host.
 
 ---
 
